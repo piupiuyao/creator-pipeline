@@ -7,12 +7,19 @@
  *   node cp.js source tiktok --q "kw1,kw2" [--go]     TikTok 搜视频反找作者(不带 --go 只报计划)
  *   node cp.js source instagram --tags "t1,t2" [--go] IG 话题反找作者
  *   node cp.js source similar --platform tiktok --seeds "@a,@b" [--go]  找和种子账号相似的人
+ *   node cp.js source upfluence --platform tiktok --q "kw1,kw2" [--go] 用 Upfluence 数据库搜(自带邮箱)
  *   node cp.js import <file.csv> [--recall]           导入名单(去重);--recall = 老合作方,首触用返场信
  *   node cp.js compute                                算流量价值/第1轮报价
  *   node cp.js todo                                   每个人下一步(JSON)
  *   node cp.js draft @h [--notes "..."] [--template X] 渲染这人该发的邮件(JSON,含附件路径)
- *   node cp.js drafted @h TEMPLATE                    已建 Gmail 草稿
- *   node cp.js sent @h TEMPLATE                       草稿已被人发出
+ *   node cp.js approve @h… | --all                    审核通过(可以起草首触了)
+ *   node cp.js decide @h "锁价 250"                   执行一句决定(和表里「你的决定」列同样的写法)
+ *   node cp.js drafted @h TEMPLATE [--draft-id X]     已建 Gmail 草稿
+ *   node cp.js sent @h TEMPLATE [--thread X]          草稿已被人发出
+ *   node cp.js handled @h                             新回信已读完记录
+ *   node cp.js revise @h --notes "..."                记英文修改意见(脚本/成片打回)
+ *   node cp.js sheet push|pull|sync                   通过表桥和 Google 表同步
+ *   node cp.js watch-tick                             盯表一次:执行表里的决定、查草稿发没发、起草、回写
  *   node cp.js undraft @h                             草稿被删/作废
  *   node cp.js record-reply @h [--q 300] [--type 还价] 记回信
  *   node cp.js round2                                 回信后算第2轮
@@ -38,16 +45,14 @@ import { computeRound1, computeRound2 } from './lib/pipeline.js';
 import { loadConfig, DEFAULT_CONFIG } from './lib/config.js';
 import { recordReply, findRow } from './lib/ops.js';
 import * as flow from './lib/flow.js';
-import { render, depositAmount, finalAmount } from './lib/templates.js';
 import { buildReport } from './lib/report.js';
-import { fillDocx } from './lib/docx.js';
 
 const SHEET = 'creators.csv';
 const argv = process.argv.slice(2);
 const cmd = argv[0];
 const flag = (name) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
 const has = (name) => argv.includes(`--${name}`);
-const BOOL_FLAGS = new Set(['--go', '--save', '--recall', '--all']);
+const BOOL_FLAGS = new Set(['--go', '--save', '--recall', '--all', '--no-draft']);
 const pos = argv.filter((a, i) => !a.startsWith('--') && !(i > 0 && argv[i - 1].startsWith('--') && !BOOL_FLAGS.has(argv[i - 1])));
 const die = (msg) => { console.error('拒绝:', msg); process.exit(1); };
 const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x, null, 2));
@@ -122,7 +127,32 @@ switch (cmd) {
       const { kept, dropped } = gate(candidates, rows, cfg);
       rows.push(...kept); save();
       out({ 种子标签: tags.map((t) => '#' + t), 种子粉丝范围: seedFollowers, 候选: candidates.length, 入表: kept.length, 淘汰: dropped, 花费美元: Number(usd.toFixed(2)) });
-    } else die('source 只支持 tiktok / instagram / similar');
+    } else if (platform === 'upfluence') {
+      const up = await import('./lib/source-upfluence.js');
+      const { profileRejectReason } = await import('./lib/source.js');
+      const keywords = list(flag('q')); const plat = flag('platform');
+      if (!keywords.length || !['tiktok', 'instagram', 'youtube'].includes(plat)) die('用法: source upfluence --platform tiktok|instagram|youtube --q "kw1,kw2" [--pages 1] [--max 30]');
+      const pages = Number(flag('pages') ?? 1), maxP = Number(flag('max') ?? 30);
+      const token = await up.upfluenceToken();
+      if (!has('go')) {
+        const credits = await up.upfluenceCredits(token);
+        out(`计划:Upfluence 在 ${plat} 搜 ${keywords.length} 个词×${pages} 页(每页 50 人,约 ${keywords.length * pages * 2} 点),列表先免费粗筛(粉丝 ${g.followerMin}-${g.followerMax}/简介/地区${g.requireEmail ? '/有邮箱' : ''}),再对最多 ${maxP} 人拉详情(约 ${maxP * 200} 点)。${credits != null ? `剩余额度: ${credits}。` : ''}确认后加 --go`);
+        break;
+      }
+      const basics = await up.upfluenceMatches({ keywords, platform: plat, followerMin: g.followerMin, followerMax: g.followerMax, pages }, token);
+      const pre = {}; const passed = [];
+      for (const b of basics) {
+        const why = (g.requireEmail && b.has_email === false) ? '没有公开邮箱'
+          : profileRejectReason({ bio: b.description, name: b.name, country: String(b.country || '').toUpperCase(), lang: b.lang }, cfg);
+        if (why) pre[why] = (pre[why] ?? 0) + 1; else passed.push(b);
+      }
+      const candidates = [];
+      for (const b of passed.slice(0, maxP)) { const c = await up.upfluenceDetail(b, plat, token); if (c) candidates.push(c); }
+      await enrichEmails(candidates);
+      const { kept, dropped } = gate(candidates, rows, cfg);
+      rows.push(...kept); save();
+      out({ 搜到: basics.length, 粗筛淘汰: pre, 拉详情: Math.min(passed.length, maxP), 入表: kept.length, 详情后淘汰: dropped, 约用额度: keywords.length * pages * 2 + Math.min(passed.length, maxP) * 200 });
+    } else die('source 只支持 tiktok / instagram / similar / upfluence');
     break;
   }
   case 'import': {
@@ -148,39 +178,34 @@ switch (cmd) {
   }
   case 'draft': {
     const r = findRow(rows, handle || ''); if (!r) die(`表里没有 ${handle}`);
-    const due = flow.dueAction(r, cfg);
-    const id = flag('template') ?? due.template;
-    if (!id) die(`${handle} 现在没有该发的邮件(${due.why ?? due.kind})`);
-    if (flag('template') && !['REVISE', 'ASK_RATE'].includes(id) && id !== due.template) die(`${handle} 当前该发 ${due.template ?? '(无)'},不能指定 ${id}`);
-    const briefFile = ['pdf', 'docx'].map((x) => join('templates', `brief.${x}`)).find((f) => existsSync(f));
-    const mail = check(render(id, r, cfg, { notes: flag('notes'), hasBrief: Boolean(briefFile) }));
-    const MIME = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
-    if (mail.attach) {
-      mail.attachments = []; const warn = [];
-      for (const kind of mail.attach) {
-        const optional = kind.endsWith('?'), name = kind.replace('?', '');
-        const label = { contract: 'Contract', invoice: 'Invoice', brief: 'Creative Brief' }[name];
-        if (name === 'brief') {
-          if (!briefFile) continue;
-          const ext = briefFile.split('.').pop();
-          if (ext === 'pdf') { mail.attachments.push({ path: briefFile, filename: `${label} - ${cfg.productName}.pdf`, mimeType: MIME.pdf }); continue; }
-        }
-        const tpl = name === 'brief' ? briefFile : join('templates', `${name}.docx`);
-        if (!existsSync(tpl)) { if (optional) continue; die(`${name} 模板没配置:把模板放到 ${tpl}(没模板就不发,绝不用别人的合同)`); }
-        const res = fillDocx(readFileSync(tpl), docValues(r));
-        const path = join('out', `${r['账号'].replace(/^@/, '')}-${name}.docx`);
-        writeFileSync(path, res.buf);
-        mail.attachments.push({ path, filename: `${label} - ${cfg.productName}.docx`, mimeType: MIME.docx, filled: res.applied, missing: res.missed });
-        if (res.missed.length) warn.push(`${label} 里这些占位没值,发前要人补或留给达人填: ${res.missed.join(', ')}`);
-      }
-      if (warn.length) mail.warning = warn.join(';');
-      delete mail.attach;
-    }
-    out({ template: id, ...mail });
+    const { composeDraft } = await import('./lib/compose.js');
+    out(check(composeDraft(r, cfg, { template: flag('template'), notes: flag('notes') })));
     break;
   }
-  case 'drafted': check(flow.markDrafted(rows, handle || '', pos[2], flow.today(), cfg)); save(); console.log('已记录草稿'); break;
-  case 'sent': check(flow.markSent(rows, handle || '', pos[2])); save(); console.log('已记录发送'); break;
+  case 'drafted': check(flow.markDrafted(rows, handle || '', pos[2], flow.today(), cfg, flag('draft-id') ?? '')); save(); console.log('已记录草稿'); break;
+  case 'sent': check(flow.markSent(rows, handle || '', pos[2], flow.today(), flag('thread') ?? '')); save(); console.log('已记录发送'); break;
+  case 'approve': {
+    const { applyDecision } = await import('./lib/decisions.js');
+    const targets = has('all') ? rows.filter((x) => x['状态'] === '待审核' && !x['发送1'] && x['审核'] !== '通过').map((x) => x['账号']) : pos.slice(1);
+    if (!targets.length) die('approve @h1 @h2 … 或 approve --all(全部待审核的)');
+    for (const h of targets) { const x = applyDecision(rows, h, '通过', cfg); console.log(`${h}: ${x.msg}`); }
+    save(); break;
+  }
+  case 'decide': {
+    // 和在表里「你的决定」写一句话效果一样: decide @h "锁价 250"
+    const { applyDecision } = await import('./lib/decisions.js');
+    const x = applyDecision(rows, handle || '', pos.slice(2).join(' '), cfg);
+    if (!x.ok) die(x.msg); save(); console.log(x.msg); break;
+  }
+  case 'revise': {
+    // Claude 把中文修改意见翻成英文后调: revise @h --notes "..."
+    const r = findRow(rows, handle || ''); if (!r) die(`表里没有 ${handle}`);
+    if (!['脚本审核', '成片审核'].includes(r['阶段'])) die(`${handle} 不在脚本/成片审核阶段`);
+    const notes = String(flag('notes') ?? '').trim(); if (!notes) die('要 --notes "英文修改意见"');
+    if (/[\u2014]/.test(notes)) die('修改意见里不能有 em dash');
+    r['修改意见'] = notes; save(); console.log('已记录修改意见,下一步起草 REVISE'); break;
+  }
+  case 'handled': check(flow.markHandled(rows, handle || '')); save(); console.log('已标记来信处理完'); break;
   case 'undraft': check(flow.clearDraft(rows, handle || '')); save(); console.log('已清除草稿标记'); break;
   case 'record-reply': {
     const opts = {}; if (flag('q') != null) opts.q = flag('q'); if (flag('type')) opts.type = flag('type');
@@ -251,6 +276,22 @@ switch (cmd) {
     out(diff.length ? { 结论: `有 ${diff.length} 处和我们发出的不一样,签约前要你看`, 明细: diff } : { 结论: '条款和我们发出的一致(只填了留给对方的空)' });
     break;
   }
+  case 'watch-tick':
+  case 'sheet': {
+    const { bridgeFrom } = await import('./lib/bridge.js');
+    const w = await import('./lib/watch.js');
+    const bridge = bridgeFrom(cfg);
+    if (!bridge) die('没配表桥:pipeline.config.json 里要有 sheetBridgeUrl / sheetBridgeToken / googleSheetTab(见 reference/sheet-bridge.md)');
+    const sub = cmd === 'watch-tick' ? 'sync' : pos[1];
+    if (sub === 'push') { await w.pushSheet(rows, cfg, bridge); save(); console.log('已写回 Google 表'); break; }
+    if (sub === 'pull') { const x = await w.pullSheet(rows, cfg, bridge); await w.pushSheet(rows, cfg, bridge, x.clear); save(); out(x); break; }
+    if (sub !== 'sync') die('sheet push | pull | sync');
+    const summary = await w.tick(rows, cfg, bridge, { draft: !has('no-draft') });
+    save();
+    out(summary);
+    if (summary.needsClaude.length) process.exitCode = 10; // 盯表脚本看到 10 就叫 Claude 来读回信/翻译
+    break;
+  }
   case 'tsv': console.log([COLUMNS, ...rows.map((r) => COLUMNS.map((c) => String(r[c] ?? '').replace(/[\t\n]/g, ' ')))].map((x) => x.join('\t')).join('\n')); break;
   case 'pull': {
     const file = pos[1]; if (!file) die('pull <google表导出的.xlsx|.csv> [--tab 名字]');
@@ -277,17 +318,4 @@ switch (cmd) {
     break;
   }
   default: die(`不认识的命令 ${cmd},node cp.js help 看用法`);
-}
-
-function docValues(r) {
-  const n = (r['姓名'] || '').trim();
-  return {
-    creator_name: n && !/^(nan|none|null)$/i.test(n) ? n : r['账号'].replace(/^@/, ''),
-    handle: r['账号'], platform: r['平台'], profile_url: r['主页'], email: r['邮箱'],
-    amount: r['成交价'], deposit: depositAmount(r, cfg), final_amount: finalAmount(r, cfg),
-    date: flow.today(), product_name: cfg.productName, product_url: cfg.productUrl,
-    deliverables: (cfg.briefBullets?.length ? cfg.briefBullets : cfg.formats).join('; '),
-    payment_terms: cfg.paymentTerms, sender_name: cfg.senderName,
-    publish_link: r['发布链接'], publish_date: r['发布日期'],
-  };
 }

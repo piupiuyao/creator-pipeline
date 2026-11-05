@@ -84,6 +84,8 @@ test('全链路:导入 → 首触 → 跟进 → 回价 → 第2轮 → 锁价 �
 
   run('compute');
   assert.equal(row()['第1轮报价'], '200'); // 9k 播放 → 公允 $250 → 首触 $200
+  assert.ok(fails('draft', '@sarah'), '没审核通过不能起草首触');
+  run('approve', '@sarah');
   const first = JSON.parse(run('draft', '@sarah'));
   assert.equal(first.template, 'FIRST');
   assert.match(first.body, /Hi Sarah,/);
@@ -298,4 +300,135 @@ test('导入的旧首触超过 21 天:不跟进,直接失联', () => {
   const r = { 账号: '@x', 邮箱: 'x@y.co', 状态: '已发首触', 发送1: '2026-01-01' };
   assert.equal(dueAction(r, DEFAULT_CONFIG, '2026-01-04').template, 'FIRST_FU');
   assert.equal(dueAction(r, DEFAULT_CONFIG, '2026-01-30').kind, 'expire');
+});
+
+// ── 表桥:用假的 Google 表 + 假 Gmail 走一遍"表里拍板 → 几分钟内起草 → 发出后回写" ──
+function fakeBridge() {
+  const sheet = { header: [], rows: [] }; const drafts = new Map(); const sent = []; const inbound = []; let n = 0;
+  const api = {
+    sheet, drafts, sent, inbound,
+    cell(handle, col) { const i = sheet.header.indexOf(col); const r = sheet.rows.find((x) => x[sheet.header.indexOf('账号')] === handle); return r ? r[i] : undefined; },
+    setCell(handle, col, v) { const r = sheet.rows.find((x) => x[sheet.header.indexOf('账号')] === handle); r[sheet.header.indexOf(col)] = v; },
+    addRow(obj) { sheet.rows.push(sheet.header.map((h) => obj[h] ?? '')); },
+    read: async () => ({ ok: true, header: sheet.header.slice(), rows: sheet.rows.map((r) => r.slice()) }),
+    write: async (header, rows, clear = {}) => {
+      if (!sheet.header.length) sheet.header = header.slice();
+      const k = sheet.header.indexOf('账号'), d = sheet.header.indexOf('你的决定');
+      for (const row of rows) {
+        const key = row[header.indexOf('账号')];
+        let r = sheet.rows.find((x) => x[k] === key);
+        if (!r) { r = sheet.header.map(() => ''); sheet.rows.push(r); }
+        header.forEach((h, c) => { if (h !== '你的决定') r[sheet.header.indexOf(h)] = row[c]; });
+        if (clear[key] !== undefined && r[d] === clear[key]) r[d] = '';
+      }
+      return { ok: true };
+    },
+    draft: async (m) => { const id = 'd' + (++n); drafts.set(id, { ...m, id }); return { ok: true, draftId: id, threadId: m.threadId ?? 't' + n }; },
+    status: async (items) => ({ ok: true, items: Object.fromEntries(items.map((it) => {
+      const r = { draftExists: null, sent: null, inbound: null };
+      if (it.draftId) { r.draftExists = drafts.has(it.draftId); if (!r.draftExists) { const s = sent.find((x) => x.draftId === it.draftId); if (s) r.sent = { threadId: s.threadId, at: new Date().toISOString() }; } }
+      if (it.checkInbound) { const m = inbound.filter((x) => x.email === it.email).at(-1); if (m) r.inbound = { threadId: m.threadId, at: m.at }; }
+      return [it.key, r];
+    })) }),
+    humanSends(handle) { const d = [...drafts.values()].find((x) => x.to === handle); drafts.delete(d.id); sent.push({ draftId: d.id, threadId: d.threadId ?? 'T-' + d.id }); return d; },
+  };
+  return api;
+}
+
+test('表桥全流程:表里写「通过」→ 起草;Gmail 发出 → 表里更新;回信 → 叫 Claude', async () => {
+  const w = await import('./lib/watch.js');
+  const flow = await import('./lib/flow.js');
+  const { COLUMNS } = await import('./lib/sheet.js');
+  const { recordReply } = await import('./lib/ops.js');
+  const { computeRound2 } = await import('./lib/pipeline.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cp-bridge-'));
+  const cfg = { ...DEFAULT_CONFIG, senderName: 'Jo', productName: 'Acme', productUrl: 'https://acme.example', formats: ['One TikTok video'], briefBullets: ['60s'] };
+  const blank = () => Object.fromEntries(COLUMNS.map((c) => [c, '']));
+  const rows = [{ ...blank(), 账号: '@sarah', 姓名: 'Sarah', 平台: 'tiktok', 粉丝: '20000', 平均播放: '9000', 互动率: '4', 邮箱: 'sarah@example.com' }];
+  const b = fakeBridge();
+  const row = () => rows.find((r) => r['账号'] === '@sarah');
+
+  let s = await w.tick(rows, cfg, b, { dir });
+  assert.equal(b.drafts.size, 0, '没审核不起草');
+  assert.match(b.cell('@sarah', '下一步'), /等你审核/);
+
+  b.setCell('@sarah', '你的决定', '通过');
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.equal(b.drafts.size, 1);
+  assert.equal(b.cell('@sarah', '你的决定'), '', '执行完清空');
+  assert.match(b.cell('@sarah', '决定结果'), /^✓ 通过/);
+  assert.match(b.cell('@sarah', '下一步'), /去 Gmail 草稿箱发送「首触」/);
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.equal(b.drafts.size, 1, '不重复起草');
+
+  b.humanSends('sarah@example.com');
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.deepEqual(s.已发出.map((x) => x.template), ['FIRST']);
+  assert.equal(row()['状态'], '已发首触');
+  assert.match(b.cell('@sarah', '下一步'), /等回信/);
+  const thread = row()['Gmail线程'];
+  assert.ok(thread);
+
+  b.inbound.push({ email: 'sarah@example.com', threadId: thread, at: new Date(Date.now() + 1000).toISOString() });
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.deepEqual(s.needsClaude.map((x) => x.why), ['reply']);
+  assert.match(b.cell('@sarah', '下一步'), /新回信/);
+
+  // Claude 读完回信:记要价,标已处理 → 下一轮自动起草第2轮,回复在原线程
+  recordReply(rows, '@sarah', { q: 300, type: '还价' }); computeRound2(rows, cfg); flow.markHandled(rows, '@sarah');
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.deepEqual(s.新草稿.map((x) => x.template), ['COUNTER']);
+  assert.equal([...b.drafts.values()].at(-1).threadId, thread);
+  assert.equal(s.needsClaude.length, 0);
+  b.humanSends('sarah@example.com'); await w.tick(rows, cfg, b, { dir });
+  recordReply(rows, '@sarah', { type: '接受' }); computeRound2(rows, cfg);
+  b.inbound.push({ email: 'sarah@example.com', threadId: thread, at: new Date(Date.now() + 2000).toISOString() });
+  await w.tick(rows, cfg, b, { dir }); flow.markHandled(rows, '@sarah');
+
+  // 表里锁价 → 没合同模板:下一步报起草失败,不发
+  b.setCell('@sarah', '你的决定', '锁价');
+  await w.tick(rows, cfg, b, { dir });
+  assert.equal(row()['阶段'], '待发合同');
+  assert.match(b.cell('@sarah', '下一步'), /起草失败.*合同模板/);
+  writeFileSync(join(dir, 'templates.tmp'), '');
+  execFileSync('mkdir', ['-p', join(dir, 'templates')]);
+  writeFileSync(join(dir, 'templates', 'contract.docx'), makeDocx());
+  s = await w.tick(rows, cfg, b, { dir });
+  const deal = [...b.drafts.values()].at(-1);
+  assert.equal(deal.attachments.length, 1);
+  b.humanSends('sarah@example.com'); await w.tick(rows, cfg, b, { dir });
+  assert.equal(row()['阶段'], '合同已发');
+
+  // 表里一路推进:签了 → 收到脚本 → 中文打回(等 Claude 翻译) → 翻好后起草
+  b.setCell('@sarah', '你的决定', '签了'); await w.tick(rows, cfg, b, { dir });
+  b.setCell('@sarah', '你的决定', '收到脚本'); await w.tick(rows, cfg, b, { dir });
+  b.setCell('@sarah', '你的决定', '脚本打回 开头5秒就要展示搜索');
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.deepEqual(s.needsClaude.map((x) => x.why), ['translate']);
+  assert.equal(b.cell('@sarah', '你的决定'), '脚本打回 开头5秒就要展示搜索', '没处理完不清');
+  row()['修改意见'] = 'Please show the search feature in the first 5 seconds.';
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.equal(b.cell('@sarah', '你的决定'), '');
+  assert.match([...b.drafts.values()].at(-1).body, /first 5 seconds/);
+
+  // 人把草稿删了、没发:不重复起草,等人写「重写」
+  const d = [...b.drafts.values()].at(-1); b.drafts.delete(d.id);
+  await w.tick(rows, cfg, b, { dir });
+  assert.match(b.cell('@sarah', '下一步'), /草稿被删了/);
+  const count = b.drafts.size; await w.tick(rows, cfg, b, { dir });
+  assert.equal(b.drafts.size, count);
+  b.setCell('@sarah', '你的决定', '重写'); await w.tick(rows, cfg, b, { dir });
+  assert.equal(b.drafts.size, count + 1);
+
+  // 看不懂的决定:写回原因,不清空
+  b.setCell('@sarah', '你的决定', '帮我想想');
+  await w.tick(rows, cfg, b, { dir });
+  assert.match(b.cell('@sarah', '决定结果'), /^✗ 帮我想想:没看懂/);
+  assert.equal(b.cell('@sarah', '你的决定'), '帮我想想');
+
+  // 人在表里手动加一个达人 → 收进来
+  b.addRow({ 账号: '@newbie', 平台: 'instagram', 邮箱: 'nb@example.com', 粉丝: '8000', 平均播放: '3000' });
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.deepEqual(s.新加达人, ['@newbie']);
+  assert.match(b.cell('@newbie', '下一步'), /等你审核/);
 });

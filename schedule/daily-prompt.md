@@ -13,6 +13,14 @@ are in `{{SKILL_DIR}}/reference/`), with these limits:
   under "需要你看一眼".
 
 Steps:
+If the config has `sheetBridgeUrl` (bridge mode):
+  a. `node {{SKILL_DIR}}/cp.js watch-tick` (pulls sheet decisions, syncs sent
+     drafts, finds new replies, drafts what is due, writes the sheet).
+  b. For every `kind: reply` in `todo`, read the reply and record it
+     (SKILL.md daily loop step 3), then `handled @h`.
+  c. `node {{SKILL_DIR}}/cp.js watch-tick` again. Never create pipeline
+     drafts with the Gmail connector in this mode. Then go to step 5.
+Otherwise (manual mode):
 1. If the config has `googleSheetId` and `googleSheetTab`, pull sheet edits
    (reference/gmail-and-sheet.md, Pull). If that fails, continue and note it.
 2. Sync sent drafts and read replies (SKILL.md daily loop steps 2-3).

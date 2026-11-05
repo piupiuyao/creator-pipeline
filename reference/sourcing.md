@@ -38,7 +38,28 @@ sellers under 0.5% engagement).
   normal on TikTok (often 60-80%), consider IG or `requireEmail: false`
   and find emails by hand for the best ones.
 
-## Two ways to search
+## Three channels
+
+| Channel | Needs | Good at | Weak at |
+|---|---|---|---|
+| Apify keyword search | APIFY_API_KEY | real recent numbers, cheap, any niche people post videos about | many TikTok bios have no email |
+| Apify find-similar | APIFY_API_KEY + 3-5 seed creators | more people like the ones that already worked | depends on seeds sharing hashtags |
+| Upfluence | UPFLUENCE_USERNAME / UPFLUENCE_PASSWORD (their own account) | email and country for most profiles, YouTube too | course sellers in marketing/e-commerce niches, low engagement; TikTok profiles often lack average views (those rows get 缺播放 and need a price from the user) |
+
+Ask which the user has; do not assume. Teams often use Upfluence for volume
+and emails, and Apify to find better-engaged people in a niche.
+
+Upfluence runs in two stages to save credits: the keyword search (≈ 2
+credits per page of 50) is screened for free on bio, country, follower range
+and has-email, and only the survivors (up to `--max`) get a full profile pull
+(≈ 200 credits each). The plan line shows remaining credits. A 402 means
+credits ran out; stop and tell the user.
+
+```bash
+node <skill_dir>/cp.js source upfluence --platform tiktok --q "study with me,notion tips" --pages 1 --max 30
+```
+
+## Two ways to search with Apify
 
 **1. By keyword** (you know what the audience watches):
 `source tiktok --q "..."` or `source instagram --tags "..."`.

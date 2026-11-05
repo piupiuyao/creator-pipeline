@@ -1,5 +1,11 @@
 # Gmail and the Google Sheet
 
+There are two ways to connect the sheet. **Bridge mode** (reference/sheet-bridge.md)
+is recommended: the sheet becomes the control panel, drafts appear minutes
+after a decision, and progress is written back after every send, all by the
+watcher without Claude. Everything below describes **manual mode**, for teams
+that cannot install the Apps Script bridge.
+
 ## Gmail: drafts only
 
 Every email goes into Gmail as a **draft**. The human opens Gmail, reads it,

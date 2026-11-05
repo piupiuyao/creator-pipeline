@@ -69,7 +69,11 @@ Everything else is machine work.
    profile; never write it into a project file.
 7. Ask which Google Sheet is the team view and which tab this pipeline may
    own (a new, dedicated tab). Save them as googleSheetId / googleSheetTab.
-   Read reference/gmail-and-sheet.md now.
+   Strongly recommend the **sheet bridge** (reference/sheet-bridge.md): the
+   team then approves and decides right in the sheet, drafts appear in
+   Gmail within minutes, and progress is written back after each send. Walk
+   them through its 5-minute setup. Without it, use manual mode
+   (reference/gmail-and-sheet.md).
 8. Offer to set up the daily run (reference/daily-run.md).
 
 ## Starting mid-way (only contract → payment, or any later stop)
@@ -92,9 +96,13 @@ the deal is required:
 
 ## Finding creators
 
-Two ways: by keyword (`source tiktok --q` / `source instagram --tags`) or
-find similar to creators the user already likes (`source similar --platform
-tiktok|instagram --seeds "@a,@b"`). Read reference/sourcing.md before the first search. Always run without `--go`
+Three channels, pick by what the user has (ask; do not assume Apify):
+by keyword through Apify (`source tiktok --q` / `source instagram --tags`),
+similar to creators they already like through Apify (`source similar
+--platform tiktok|instagram --seeds "@a,@b"`), or the Upfluence database if
+they have an account (`source upfluence --platform tiktok|instagram|youtube
+--q "..."`; emails and country included, paid in Upfluence credits). Read
+reference/sourcing.md before the first search. Always run without `--go`
 first, show the user the plan and cost line, and only add `--go` after they
 agree. Lists the user already has go in with `cp.js import <file.csv>`
 (columns 账号, 姓名, 平台, 粉丝, 平均播放, 互动率, 邮箱; 平台 is tiktok /
@@ -104,7 +112,23 @@ Show the user the new rows (账号, 粉丝, 平均播放, 第1轮报价, 状态)
 price in the Google Sheet or mark 状态 = 跳过; pull those edits back with `pull`
 before drafting (reference/gmail-and-sheet.md).
 
+## Approval before first touch
+
+`requireApproval` is on by default (like the platform's 批准入库): after
+`compute`, a creator gets a first-touch draft only once a person approves
+them, by writing 通过 in the sheet's 你的决定 column (bridge mode) or by
+telling you (`cp.js approve @h …` / `approve --all`). 跳过 drops them;
+报价 200 changes our first-touch price.
+
 ## The daily loop (also what the scheduled run does)
+
+**With the sheet bridge**, steps 1, 2, 5 and the sheet push in 6 are all done
+by `cp.js watch-tick` (and by the 3-minute watcher on its own). Never create
+pipeline drafts with the Gmail connector in this mode: watch-tick drafts
+through the bridge so each draft is tracked. Your part is step 3 (read
+replies, then `handled @h`), the paid `track` in 4, and the report.
+
+**Without the bridge (manual mode):**
 
 1. **Pull sheet edits**: export the team Google Sheet tab as CSV through the
    Drive connector, then `cp.js pull <file>`.
@@ -124,6 +148,7 @@ before drafting (reference/gmail-and-sheet.md).
    - posting link arrived: `published @h <url> [date]`
    - red flags (legal threats, prepayment demands, exclusivity, anger, link-selling, agreed-then-raised): record nothing, put it in the report for the user
    - questions answered by brief.md: write a short reply draft yourself (negotiation.md rules), no numbers except the engine's
+   - after recording (or deciding there is nothing to record): `handled @h`
 4. `cp.js expire` (marks people who never answered the follow-up as 失联).
    Rows published 7+ days ago with an empty 发布播放: `cp.js track --go`
    (≈ $0.01 per post) to record views, actual CPM, and whether the post
@@ -141,6 +166,7 @@ before drafting (reference/gmail-and-sheet.md).
 
 | User says | You run |
 |---|---|
+| Any decision the sheet column accepts (通过 / 锁价 280 / 脚本通过 / 定金已付 PayPal …) | `decide @h "<their words>"`; with the bridge, then `watch-tick` |
 | 锁价 / 就这个价 / 成交 @h [价格] | `lock @h [price]` then draft DEAL |
 | 这个人合同已经签了 / 视频已经发了 (new to the pipeline) | `lock @h <price> --at 已签约` / `--at 已发布` |
 | 脚本可以 / 通过 | `review @h script pass` then draft SCRIPT_OK |
