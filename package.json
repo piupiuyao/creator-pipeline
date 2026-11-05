@@ -1,0 +1,9 @@
+{
+  "name": "creator-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Creator outreach pipeline for Claude Code + Gmail + Google Sheet",
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test-negotiation.js test-flow.js" }
+}

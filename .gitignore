@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+# 活动数据不进仓库
+creators.csv
+pipeline.config.json
+brief.md
+out/
+reports/
+templates/
+*.tgz
