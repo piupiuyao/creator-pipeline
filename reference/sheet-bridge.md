@@ -40,15 +40,18 @@ fails or the push returns an HTML page. Then use manual mode
 
 After editing bridge.gs later, deploy a **new version** of the same deployment
 (Deploy → Manage deployments → edit → New version) so the URL stays the same.
+A deployment older than the `discard` action cannot delete outdated drafts:
+the sheet then says ⚠️ and asks the person to delete it in Gmail.
 
 ## What people write in 「你的决定」
 
 | Write | Effect |
 |---|---|
-| 通过 | approve for first touch → draft appears |
+| 通过 (also 通过了 / ok / ✅) | approve for first touch → draft appears |
+| 通过 200 | set the first-touch price and approve (needed for rows the engine does not price) |
 | 跳过 | drop this creator |
 | 报价 200 | set our first-touch price (before it is sent) |
-| 锁价 / 锁价 280 | lock the deal (at the engine's price or 280) → deal email + contract |
+| 锁价 / 锁价 280 | lock the deal (at the engine's price or 280) → deal email + contract. Automatic when the creator accepts exactly our offer (`autoLockOnAccept`) |
 | 接手 已签约 300 | bring someone in mid-way at that stage and price |
 | 签了 | signed contract received |
 | 收到脚本 / 不审脚本 | script arrived / skip script review |
@@ -56,13 +59,14 @@ After editing bridge.gs later, deploy a **new version** of the same deployment
 | 定金已付 PayPal | deposit paid → "deposit sent" email |
 | 收到成片 / 成片通过 2026-12-01 / 成片打回 意见 | video review |
 | 发布 https://… | posting link → balance + invoice email |
-| 尾款已付 | settled |
+| 尾款已付 PayPal | settled → "final payment sent, thank you" email |
 | 重写 | re-draft an email whose Gmail draft was deleted |
 | 暂停 / 取消 / 恢复 <阶段> | pause, cancel, resume |
 
 The watcher clears the cell once done and writes 「决定结果」: ✓ done, ✗ not
-understood or refused (the cell stays so the person can fix it), ⏳ waiting
-for Claude. 「下一步」 always says, in plain Chinese, what happens next and
+understood or refused (the cell stays so the person can fix it; the message
+says what this row needs now), ⏳ waiting for Claude, 🗑 an outdated draft
+was removed from Gmail. 「下一步」 always says, in plain Chinese, what happens next and
 whether a person is needed (👉).
 
 People may also add a creator by typing a new row (账号, 平台, 邮箱 at least);
@@ -82,7 +86,8 @@ written by the engine and overwritten on the next round.
 
 ## What the bridge can and cannot do
 
-It can only: read and write the sheet, create Gmail drafts, and tell whether
+It can only: read and write the sheet, create Gmail drafts, delete a draft
+the pipeline itself created once it is outdated, and tell whether
 a draft still exists / was sent / whether a creator wrote back (times and
 thread ids only, never email bodies). It cannot send email. Anyone holding
 both the web app URL and the token could create drafts or read the tab, so

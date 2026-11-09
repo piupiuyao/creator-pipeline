@@ -7,6 +7,7 @@
  *   write  按「账号」更新/追加行(「你的决定」列只在值没变时清空,不会冲掉你刚写的)
  *   draft  在 Gmail 建草稿(可挂附件、可回复到原线程)。不会发送。
  *   status 查某些草稿还在不在、有没有发出、对方有没有新来信(只返回时间和线程号,不返回正文)
+ *   discard 删掉一封本流程建的草稿(进度变了、那封已经不该发的时候)
  *
  * 安装:见仓库 reference/sheet-bridge.md。需要在左侧「服务」里添加 Gmail API。
  */
@@ -34,6 +35,7 @@ function doPost(e) {
     if (req.action === 'write') return json_(write_(req));
     if (req.action === 'draft') return json_(draft_(req));
     if (req.action === 'status') return json_(status_(req.items || []));
+    if (req.action === 'discard') return json_(discard_(req.draftId));
     return json_({ ok: false, error: 'unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message || err) });
@@ -122,6 +124,13 @@ function draft_(req) {
   if (threadId) message.threadId = threadId;
   const d = Gmail.Users.Drafts.create({ message: message }, 'me');
   return { ok: true, draftId: d.id, threadId: d.message.threadId };
+}
+
+/** 删草稿。已经不在(人删了/发了)也算成功。 */
+function discard_(draftId) {
+  if (!draftId) return { ok: false, error: 'no draftId' };
+  try { Gmail.Users.Drafts.remove('me', draftId); } catch (err) { if (!/not found|404/i.test(String(err))) throw err; }
+  return { ok: true };
 }
 
 /** items: [{ key, email, draftId?, sinceSec }] → 每人:草稿还在吗/发出了吗/有没有新来信 */

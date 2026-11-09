@@ -215,10 +215,22 @@ test('修②:超单笔上限只给参考价不出价', () => {
   assert.equal(r['第1轮报价'], '');
   assert.equal(r['流量价值'], 12525);
 });
-test('修③:第2轮发出后她接受 → 按第2轮价成交待锁', () => {
+test('修③:第2轮发出后她接受 → 按第2轮价直接锁价(autoLockOnAccept 默认开)', () => {
   const [r] = computeRound2([row({ 流量价值:'540', 第1轮报价:'432', 发送1:'x',
     他的要价:'900', 第2轮报价:'540', 发送2:'x', 回复类型:'接受' })]);
   assert.equal(r['成交价'], '540');
+  assert.equal(r['状态'], '已成交');
+  assert.equal(r['阶段'], '待发合同');
+});
+test('autoLockOnAccept 关掉 → 接受后仍等人锁价', () => {
+  const [r] = computeRound2([row({ 流量价值:'540', 第1轮报价:'432', 发送1:'x', 回复类型:'接受' })],
+    { ...DEFAULT_CONFIG, autoLockOnAccept: false });
+  assert.equal(String(r['成交价']), '432');
+  assert.equal(r['状态'], '成交待锁');
+  assert.ok(!r['阶段']);
+});
+test('她自己报的价落在带内 → 不自动锁,等人', () => {
+  const [r] = computeRound2([row({ 流量价值:'250', 第1轮报价:'200', 发送1:'x', 他的要价:'260', 回复类型:'还价' })]);
   assert.equal(r['状态'], '成交待锁');
 });
 test('修③:第2轮发出后她拒绝 → 关闭', () => {

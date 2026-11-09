@@ -25,7 +25,9 @@ Otherwise (manual mode):
    (reference/gmail-and-sheet.md, Pull). If that fails, continue and note it.
 2. Sync sent drafts and read replies (SKILL.md daily loop steps 2-3).
 3. `node {{SKILL_DIR}}/cp.js round2`, then `node {{SKILL_DIR}}/cp.js expire`.
-4. Draft everything `todo` lists as `kind: email` (SKILL.md step 5).
+4. For every `kind: stale` in `todo`, delete that Gmail draft and run
+   `undraft @h`. Then draft everything `todo` lists as `kind: email`
+   (SKILL.md step 5).
 5. `node {{SKILL_DIR}}/cp.js report --save`. Prepend a short "需要你看一眼"
    section if step 1-4 produced any notes. Save the final text over
    reports/<today>.md.

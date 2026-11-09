@@ -5,19 +5,19 @@ this file explains each stop and what you do there.
 
 | 阶段 | What it means | Who moves it | Email (template) |
 |---|---|---|---|
-| 待发合同 | price locked | `lock` | DEAL: deal recap + contract attached |
+| 待发合同 | price locked | `lock` (or automatic when the creator accepts our offer) | DEAL: deal recap + contract attached; replies in the existing Gmail conversation when there is one |
 | 合同已发 | DEAL was sent | `sent … DEAL` | after 1 day unsigned: CONTRACT_FU (once) |
 | 已签约 | signed contract came back | you: `stage @h 已签约` | none, wait for script |
 | 脚本审核 | script / draft arrived | you: `stage @h 脚本审核` | none, the user reviews |
-| 脚本已通过 | user approved script | `review @h script pass` | SCRIPT_OK: asks for payment details |
+| 脚本已通过 | user approved script | `review @h script pass` | SCRIPT_OK: asks for payment details for the deposit |
 | 待付定金 | SCRIPT_OK sent | `sent … SCRIPT_OK` | none, the user pays |
 | 定金已付 | user paid deposit | `paid @h deposit [--method X]` | DEPOSIT_SENT |
 | 成片审核 | final video arrived | you: `stage @h 成片审核` | none, the user reviews |
-| 成片已通过 | user approved video | `review @h video pass [--date D]` | VIDEO_OK: confirms or asks posting date |
+| 成片已通过 | user approved video | `review @h video pass [--date D]` | VIDEO_OK: confirms the posting date ("Friday, Nov 20") or asks for one |
 | 待发布 | VIDEO_OK sent | `sent … VIDEO_OK` | none, wait for the link |
-| 已发布 | link arrived | you: `published @h <url> [date]` | FINAL_INVOICE: balance + invoice attached |
+| 已发布 | link arrived | you: `published @h <url> [date]` | FINAL_INVOICE: balance + invoice attached; reuses the deposit's payment method; promises a payment window only if `finalPaymentDays` is set |
 | 尾款待付 | FINAL_INVOICE sent | `sent … FINAL_INVOICE` | none, the user pays |
-| 已结清 | balance paid | `paid @h final` | none |
+| 已结清 | balance paid | `paid @h final [--method X]` | FINAL_SENT: "final payment sent, thank you" |
 
 Also: `stage @h 暂停` / `stage @h 取消` from anywhere; from 暂停 any stage.
 No script review in this deal: `stage @h 待付定金` straight from 已签约.
@@ -50,12 +50,14 @@ Write placeholders in the document as `{{token}}`. Available tokens:
 | `{{date}}` | today |
 | `{{product_name}}` `{{product_url}}` | from config |
 | `{{deliverables}}` | briefBullets (or formats), joined with "; " |
+| `{{company_name}}` | config companyName (falls back to productName): the contracting party |
 | `{{payment_terms}}` `{{sender_name}}` | from config |
 | `{{publish_link}}` `{{publish_date}}` | after publishing |
 
-Anything else (creator's address, signature, bank details) stays as a
-`{{placeholder}}` or blank line for the creator to fill. `draft` reports which
-tokens had no value in `warning`; mention it to the user before they send.
+Anything else (creator's address, signature, bank details) becomes a blank
+line (`________________`) for the creator to fill; a raw `{{placeholder}}` is
+never sent. `draft` reports which tokens had no value in `warning`; mention it
+to the user before they send.
 
 A paragraph containing a placeholder keeps the style of its first piece of
 text. Put placeholders in plain paragraphs, not mixed bold/italic runs.

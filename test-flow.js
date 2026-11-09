@@ -15,12 +15,12 @@ import { gate } from './lib/source.js';
 const CP = join(dirname(fileURLToPath(import.meta.url)), 'cp.js');
 
 // Word 会把 {{creator_name}} 拆进好几个 run —— 测试模板故意这么拆
-function makeDocx() {
+function makeDocx(extra) {
   const doc = `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
 <w:p><w:r><w:t>Creator: {{creator</w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>_name}}</w:t></w:r></w:p>
 <w:p><w:r><w:t>Fee: $</w:t></w:r><w:r><w:t>{{amount}} (deposit {{deposit}})</w:t></w:r></w:p>
 <w:p><w:r><w:t>Plain paragraph &amp; untouched</w:t></w:r></w:p>
-<w:p><w:r><w:t>Address: {{creator_address}}</w:t></w:r></w:p>
+<w:p><w:r><w:t>Address: {{creator_address}}</w:t></w:r></w:p>${extra ? `\n<w:p><w:r><w:t>${extra}</w:t></w:r></w:p>` : ''}
 </w:body></w:document>`;
   return writeZip([
     { name: '[Content_Types].xml', data: Buffer.from('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>') },
@@ -113,10 +113,8 @@ test('全链路:导入 → 首触 → 跟进 → 回价 → 第2轮 → 锁价 �
   run('sent', '@sarah', 'COUNTER');
   run('record-reply', '@sarah', '--type', '接受');
   run('round2');
-  assert.equal(row()['状态'], '成交待锁');
-  assert.ok(fails('draft', '@sarah'), '没锁价不能出合同信');
-
-  run('lock', '@sarah');
+  // 她原样接受我们的第2轮价 → 自动锁价,直接进待发合同
+  assert.equal(row()['状态'], '已成交');
   assert.equal(row()['阶段'], '待发合同');
   assert.ok(fails('draft', '@sarah'), '没合同模板就拒绝');
   writeFileSync(join(dir, 'templates', 'contract.docx'), makeDocx());
@@ -150,16 +148,22 @@ test('全链路:导入 → 首触 → 跟进 → 回价 → 第2轮 → 锁价 �
   run('sent', '@sarah', 'DEPOSIT_SENT');
   run('stage', '@sarah', '成片审核');
   run('review', '@sarah', 'video', 'pass', '--date', '2026-12-01');
-  assert.match(JSON.parse(run('draft', '@sarah')).body, /\(2026-12-01\) works on our end/);
+  assert.match(JSON.parse(run('draft', '@sarah')).body, /Tuesday, Dec 1 works on our end/);
   run('sent', '@sarah', 'VIDEO_OK');
   run('published', '@sarah', 'https://www.tiktok.com/@sarah/video/1');
   writeFileSync(join(dir, 'templates', 'invoice.docx'), makeDocx());
   const inv = JSON.parse(run('draft', '@sarah'));
   assert.equal(inv.template, 'FINAL_INVOICE');
   assert.match(inv.body, /final payment of \$125/);
+  assert.match(inv.body, /same PayPal account as the deposit/, '定金时已知收款方式,不让对方重填');
+  assert.doesNotMatch(inv.body, /1-2 business days/, '没配 finalPaymentDays 就不许诺天数');
   run('sent', '@sarah', 'FINAL_INVOICE');
-  run('paid', '@sarah', 'final');
+  run('paid', '@sarah', 'final', '--method', 'PayPal');
   assert.equal(row()['阶段'], '已结清');
+  const fin = JSON.parse(run('draft', '@sarah'));
+  assert.equal(fin.template, 'FINAL_SENT', '尾款付完通知达人');
+  assert.match(fin.body, /\$125 has just been sent via PayPal/);
+  run('sent', '@sarah', 'FINAL_SENT');
   assert.equal(dueAction(row(), cfg).kind, 'none');
   const report = run('report');
   assert.match(report, /已结清 1 单/);
@@ -330,6 +334,7 @@ function fakeBridge() {
       if (it.checkInbound) { const m = inbound.filter((x) => x.email === it.email).at(-1); if (m) r.inbound = { threadId: m.threadId, at: m.at }; }
       return [it.key, r];
     })) }),
+    discard: async (id) => { drafts.delete(id); return { ok: true }; },
     humanSends(handle) { const d = [...drafts.values()].find((x) => x.to === handle); drafts.delete(d.id); sent.push({ draftId: d.id, threadId: d.threadId ?? 'T-' + d.id }); return d; },
   };
   return api;
@@ -431,4 +436,108 @@ test('表桥全流程:表里写「通过」→ 起草;Gmail 发出 → 表里更
   s = await w.tick(rows, cfg, b, { dir });
   assert.deepEqual(s.新加达人, ['@newbie']);
   assert.match(b.cell('@newbie', '下一步'), /等你审核/);
+});
+
+test('过时草稿:催合同还在草稿箱、对方已签回 → 自动从 Gmail 撤掉,下一步正确', async () => {
+  const w = await import('./lib/watch.js');
+  const { COLUMNS } = await import('./lib/sheet.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cp-stale-'));
+  const cfg = { ...DEFAULT_CONFIG, senderName: 'Jo', productName: 'Acme', productUrl: 'https://acme.example', formats: ['One TikTok video'] };
+  const rows = [{ ...Object.fromEntries(COLUMNS.map((c) => [c, ''])), 账号: '@amy', 姓名: 'Amy', 邮箱: 'amy@example.com',
+    状态: '已成交', 成交价: '200', 阶段: '合同已发', 阶段更新: '2026-01-01', Gmail线程: 'T1' }];
+  const b = fakeBridge();
+  let s = await w.tick(rows, cfg, b, { dir });
+  assert.deepEqual(s.新草稿.map((x) => x.template), ['CONTRACT_FU']);
+  assert.equal(b.drafts.size, 1);
+  b.setCell('@amy', '你的决定', '签了。');
+  s = await w.tick(rows, cfg, b, { dir });
+  assert.deepEqual(s.撤掉过时草稿.map((x) => x.template), ['CONTRACT_FU']);
+  assert.equal(b.drafts.size, 0, 'Gmail 里那封催合同被删掉');
+  assert.equal(rows[0]['草稿'], '');
+  assert.match(b.cell('@amy', '下一步'), /等对方交脚本/);
+  assert.match(b.cell('@amy', '决定结果'), /撤掉过时的「催合同」/);
+});
+
+test('过时草稿被人自己删掉 → 不要求「重写」', async () => {
+  const w = await import('./lib/watch.js');
+  const { COLUMNS } = await import('./lib/sheet.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cp-stale2-'));
+  const cfg = { ...DEFAULT_CONFIG, senderName: 'Jo', productName: 'Acme', productUrl: 'https://acme.example', formats: ['One TikTok video'] };
+  const rows = [{ ...Object.fromEntries(COLUMNS.map((c) => [c, ''])), 账号: '@amy', 姓名: 'Amy', 邮箱: 'amy@example.com',
+    状态: '已成交', 成交价: '200', 阶段: '合同已发', 阶段更新: '2026-01-01', Gmail线程: 'T1' }];
+  const b = fakeBridge();
+  await w.tick(rows, cfg, b, { dir });
+  rows[0]['阶段'] = '已签约';                       // 人在 Claude 里说了"签了"
+  b.drafts.clear();                                   // 同时自己在 Gmail 删了催合同
+  await w.tick(rows, cfg, b, { dir });
+  assert.equal(rows[0]['草稿'], '');
+  assert.doesNotMatch(b.cell('@amy', '下一步'), /重写/);
+});
+
+test('中途接手:合同信回复到之前在 Gmail 里的旧对话,不另开新邮件', async () => {
+  const w = await import('./lib/watch.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cp-take-'));
+  execFileSync('mkdir', ['-p', join(dir, 'templates')]);
+  writeFileSync(join(dir, 'templates', 'contract.docx'), makeDocx());
+  const cfg = { ...DEFAULT_CONFIG, senderName: 'Jo', productName: 'Acme', productUrl: 'https://acme.example', formats: ['One TikTok video'] };
+  const rows = [];
+  const b = fakeBridge();
+  await w.tick(rows, cfg, b, { dir });
+  b.sheet.header = (await import('./lib/sheet.js')).COLUMNS.slice();
+  b.inbound.push({ email: 'eve@example.com', threadId: 'OLD-THREAD', at: '2026-10-01T10:00:00.000Z' });
+  b.addRow({ 账号: '@eve', 姓名: 'Eve', 平台: 'TikTok', 邮箱: 'eve@example.com', 你的决定: '接手 待发合同 300' });
+  const s = await w.tick(rows, cfg, b, { dir });
+  assert.deepEqual(s.新草稿.map((x) => x.template), ['DEAL'], JSON.stringify(s));
+  assert.equal([...b.drafts.values()].at(-1).threadId, 'OLD-THREAD');
+});
+
+test('缺数据的人:「通过 150」按人给的价直接起草;只写「通过」会提示要价格', async () => {
+  const w = await import('./lib/watch.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cp-manual-'));
+  const cfg = { ...DEFAULT_CONFIG, senderName: 'Jo', productName: 'Acme', productUrl: 'https://acme.example', formats: ['One TikTok video'] };
+  const { COLUMNS } = await import('./lib/sheet.js');
+  const rows = [{ ...Object.fromEntries(COLUMNS.map((c) => [c, ''])), 账号: '@dina', 姓名: 'Dina', 平台: 'tiktok', 邮箱: 'dina@example.com' }];
+  const b = fakeBridge();
+  await w.tick(rows, cfg, b, { dir });
+  assert.equal(rows[0]['状态'], '缺粉丝数');
+  assert.match(b.cell('@dina', '下一步'), /写「通过 价格」/);
+  b.setCell('@dina', '你的决定', '通过了');
+  await w.tick(rows, cfg, b, { dir });
+  assert.match(b.cell('@dina', '决定结果'), /^✗ 通过了:还没有报价/);
+  assert.equal(b.drafts.size, 0);
+  b.setCell('@dina', '你的决定', '通过 150');
+  await w.tick(rows, cfg, b, { dir });
+  assert.equal(b.drafts.size, 1);
+  assert.match([...b.drafts.values()][0].body, /we can offer \$150/);
+  assert.equal(rows[0]['状态'], '已通过');
+  assert.match(b.cell('@dina', '下一步'), /去 Gmail 草稿箱发送「首触」/);
+});
+
+test('合同:签约方用公司名;没值的占位留空线,不把 {{}} 发出去;落款带公司名', async () => {
+  const { composeDraft } = await import('./lib/compose.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cp-docx-'));
+  execFileSync('mkdir', ['-p', join(dir, 'templates')]);
+  writeFileSync(join(dir, 'templates', 'contract.docx'), makeDocx('Between {{company_name}} and {{creator_name}}, address {{creator_address}}'));
+  const cfg = { ...DEFAULT_CONFIG, senderName: 'Mia', companyName: 'Tonebird Inc.', productName: 'Tonebird', productUrl: 'https://t.example', formats: ['One video'] };
+  const r = { 账号: '@eve', 姓名: 'Eve', 邮箱: 'e@x.co', 成交价: '300', 阶段: '待发合同', 状态: '已成交' };
+  const m = composeDraft(r, cfg, { dir });
+  assert.equal(m.template, 'DEAL');
+  const xml = execFileSync('unzip', ['-p', m.attachments[0].path, 'word/document.xml']).toString();
+  assert.match(xml, /Between Tonebird Inc\. and Eve/);
+  assert.doesNotMatch(xml, /\{\{/);
+  assert.match(xml, /address ____/);
+  assert.match(m.warning, /creator_address 没有值,已留空线/);
+  assert.match(m.body, /Best,\nMia\nTonebird Inc\.$/);
+});
+
+test('下一步文案:失联 / 等翻译 / 看不懂时按当前步骤提示', async () => {
+  const flow = await import('./lib/flow.js');
+  const { applyDecision } = await import('./lib/decisions.js');
+  assert.match(flow.nextStepText({ 状态: '失联', 发送1: '2026-01-01', 跟进1: '2026-01-04' }, DEFAULT_CONFIG), /已失联/);
+  assert.match(flow.nextStepText({ 阶段: '脚本审核', 决定结果: '⏳ 脚本打回 太慢:…' }, DEFAULT_CONFIG), /等 Claude 把修改意见翻成英文/);
+  const rows = [{ 账号: '@x', 邮箱: 'x@y.co', 阶段: '脚本审核', 成交价: '200', 状态: '已成交' }];
+  const x = applyDecision(rows, '@x', '随便', DEFAULT_CONFIG);
+  assert.equal(x.ok, false);
+  assert.match(x.msg, /这一行现在:审脚本/);
+  assert.ok(x.msg.length < 80, '提示要短');
 });

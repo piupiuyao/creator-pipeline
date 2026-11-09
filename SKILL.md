@@ -22,19 +22,24 @@ Run every command from the user's campaign folder (the one holding
                                            │回信
                                            ▼
                         record-reply + round2 ──► 第2轮 COUNTER / 收尾 OUT_OF_RANGE / CLOSE_REJECTED
-                                           │成交待锁
-                              👤 lock(用户说锁才锁)
+                                           │成交待锁(对方原样接受我们的价 → autoLockOnAccept 自动锁)
+                              👤 lock(其余情况用户说锁才锁)
                                            ▼
  成交确认+合同 DEAL ─1天没签─► 催合同 CONTRACT_FU
         │签回 stage 已签约 → stage 脚本审核
  👤 review script pass ─► 脚本通过 SCRIPT_OK(要收款信息) ─► 👤 付定金 paid deposit ─► 定金已付 DEPOSIT_SENT
         │revise ─► REVISE(用户原话)                                         │收到成片 stage 成片审核
- 👤 review video pass ─► 成片通过 VIDEO_OK ─► 发布 published <链接> ─► 尾款+invoice FINAL_INVOICE ─► 👤 paid final ─► 已结清
+ 👤 review video pass ─► 成片通过 VIDEO_OK ─► 发布 published <链接> ─► 尾款+invoice FINAL_INVOICE ─► 👤 paid final ─► 尾款已付 FINAL_SENT ─► 已结清
 ```
 
 Human gates (👤): approving each Gmail draft before it is sent, locking the
-price, script verdict, video verdict, paying the deposit, paying the balance.
-Everything else is machine work.
+price (automatic when the creator accepts exactly our offer, config
+`autoLockOnAccept`), script verdict, video verdict, paying the deposit, paying
+the balance. Everything else is machine work.
+
+A draft that is still in Gmail when progress moves on (the contract came back
+while "chase contract" waits, a reply arrived while a follow-up waits) is
+`kind: stale`: it must not be sent. The watcher deletes it automatically.
 
 ## First run (no pipeline.config.json in the folder)
 
@@ -42,11 +47,14 @@ Everything else is machine work.
 2. `node <skill_dir>/cp.js init`. This creates creators.csv, pipeline.config.json,
    brief.md, templates/, reports/, out/.
 3. Interview the user and write the answers into pipeline.config.json:
-   - senderName, productName, productUrl, productPitch (one sentence, their words)
+   - senderName, companyName (the legal party on the contract and the second
+     signature line; blank = productName), productName, productUrl,
+     productPitch (one sentence, their words)
    - formats: the collaboration formats as a list, e.g. "One 30-60s TikTok video showing how you use it"
    - scope: one-line deliverable used inside price sentences
    - briefBullets: content requirements listed in the deal email
-   - paymentTerms (default: 50% after script approval, rest after the video is live) and depositPct
+   - paymentTerms (default: 50% after script approval, rest after the video is live), depositPct,
+     and finalPaymentDays (business days to pay the balance after the invoice; blank = no promise)
    - firstTouchMode: `offer` (first email names our price, recommended) or `ask_rate` (first email asks for their rate card)
    - pricing: explain in plain words that a fair price = a base fee + a rate per 1,000 views; defaults make 3k views ≈ $100 and 9k views ≈ $250. If they have past deals, set kocBaseUsd / kocPerKUsd from two of them.
    - sourcing: follower range, minimum engagement % (default 3), whether an email is required,
@@ -118,7 +126,9 @@ before drafting (reference/gmail-and-sheet.md).
 `compute`, a creator gets a first-touch draft only once a person approves
 them, by writing 通过 in the sheet's 你的决定 column (bridge mode) or by
 telling you (`cp.js approve @h …` / `approve --all`). 跳过 drops them;
-报价 200 changes our first-touch price.
+报价 200 changes our first-touch price; 通过 200 does both. Rows the engine
+will not price (缺粉丝数, 缺播放, KOL手动, 超上限待人工, 单太小, 买量嫌疑) need
+通过 <price>; a bare 通过 is refused with that hint.
 
 ## The daily loop (also what the scheduled run does)
 
@@ -135,6 +145,10 @@ replies, then `handled @h`), the paid `track` in 4, and the report.
 2. **Sync sent drafts**: for every row whose 草稿 column is filled, search
    Gmail Sent for a message to that address with that subject after the draft
    date. Found → `cp.js sent @handle TEMPLATE`. Draft deleted and not sent →
+   `cp.js undraft @handle`.
+   Rows `todo` lists as `kind: stale` have a draft that should no longer go
+   out (progress moved on, e.g. the contract came back while the "chase
+   contract" draft was waiting): delete that Gmail draft, then
    `cp.js undraft @handle`.
 3. **Read replies**: `cp.js active` lists live threads. Search Gmail for mail
    from each address newer than 最近联系. For each new reply, read the LATEST
@@ -173,7 +187,7 @@ replies, then `handled @h`), the paid `track` in 4, and the report.
 | 脚本要改: <意见> | `review @h script revise`, then `draft @h --template REVISE --notes "<their exact words, translated to English if needed>"` |
 | 成片可以 [发布日期] | `review @h video pass [--date YYYY-MM-DD]` then draft VIDEO_OK |
 | 定金付了 [渠道] | `paid @h deposit [--method PayPal]` then draft DEPOSIT_SENT |
-| 尾款付了 | `paid @h final` |
+| 尾款付了 [渠道] | `paid @h final [--method PayPal]` then draft FINAL_SENT |
 | 这些是老合作方,再约一次 | `import <file> --recall` (first touch becomes a "back again" email) |
 | 看看发布效果 | `track` (plan) then `track --go` |
 | 跳过这个人 | set 状态 跳过 in the Google Sheet, then `pull`, or tell them to |
