@@ -11,6 +11,33 @@
 
 > 🧪 **Beta 版**：整条流程已在模拟的表格和 Gmail 上从头跑通，有 64 个自动测试。真实 Gmail 和 Google 表的安装还在小范围试用，遇到问题欢迎开 issue。
 
+## 一张图看懂
+
+```mermaid
+flowchart TD
+  subgraph S1["① 找人"]
+    direction LR
+    A1["关键词 / 找相似 / Upfluence"] --> A2["自动筛选<br/>粉丝 · 互动率 · 邮箱 · 地区"] --> A3["按播放算报价"] --> H1["👤 通过 / 跳过"]
+  end
+  subgraph S2["② 外联砍价"]
+    direction LR
+    B1["首触邮件"] --> B2["3 天没回<br/>自动跟进"] --> B3["Claude 读回信"] --> B4["还价<br/>最多 2 轮"] --> H2["👤 锁价<br/>接受原价时自动锁"]
+  end
+  subgraph S3["③ 合同脚本"]
+    direction LR
+    C1["成交信 + 合同"] --> C2["1 天没签<br/>自动催签"] --> C3["签回<br/>自动比对条款"] --> H3["👤 审脚本"] --> H4["👤 付定金"]
+  end
+  subgraph S4["④ 发布结款"]
+    direction LR
+    D0["👤 审成片"] --> D1["发布<br/>尾款 + invoice"] --> D2["7 天后追踪<br/>播放 · 实际 CPM"] --> H5["👤 付尾款"] --> D3["感谢信 · 结清"]
+  end
+  S1 --> S2 --> S3 --> S4
+  classDef human fill:#ffe1d6,stroke:#e3241b,color:#140f0e,font-weight:bold
+  class H1,H2,H3,H4,D0,H5 human
+```
+
+红色 👤 是人做的 6 件事，其余全部自动。所有邮件都只进 Gmail 草稿箱，由人点发送。
+
 ---
 
 ## 为什么做这个
@@ -341,3 +368,7 @@ test-*.js           测试：npm test
 ## 反馈
 
 遇到问题或有想法，欢迎在 GitHub 开 issue。
+
+## 许可证
+
+MIT，随便用、随便改。
